@@ -47,7 +47,7 @@ html,body{height:100%;width:100%;background:#0a0a0a}
 .tp-addbtn{background:var(--acc);border:none;border-radius:8px;padding:7px;color:#fff;font-size:12px;cursor:pointer;width:100%;margin-bottom:8px;display:flex;align-items:center;justify-content:center;gap:6px}
 .tp-addbtn:hover{opacity:.85}
 .tbtn.p{background:var(--acc);color:#fff}
-#cwrap{flex:1;background:#0a0a0a;display:flex;align-items:center;justify-content:center;position:relative;overflow:hidden;min-height:0}
+#cwrap{flex:1;background:#0a0a0a;display:flex;align-items:center;justify-content:center;position:relative;overflow:hidden;min-height:0;touch-action:none}
 #ol{position:absolute;pointer-events:all;overflow:hidden}
 #ttabs{background:var(--bg2);display:flex;border-top:1px solid #252525;border-bottom:1px solid #252525;overflow-x:auto;flex-shrink:0}
 #ttabs::-webkit-scrollbar{display:none}
@@ -607,6 +607,50 @@ const ctx=canvas.getContext('2d');
 const olEl=document.getElementById('ol');
 const cw=document.getElementById('cwrap');
 
+// ── Unified pointer helper — prevents mouse ghost events on mobile ────────────
+let _touchActive=false;
+function gxy(e){
+  if(e.touches&&e.touches.length)return{x:e.touches[0].clientX,y:e.touches[0].clientY};
+  if(e.changedTouches&&e.changedTouches.length)return{x:e.changedTouches[0].clientX,y:e.changedTouches[0].clientY};
+  return{x:e.clientX,y:e.clientY};
+}
+// Suppress mouse events that fire after touch on mobile
+document.addEventListener('touchstart',()=>{_touchActive=true;},{passive:true});
+document.addEventListener('touchend',()=>{setTimeout(()=>{_touchActive=false;},300);},{passive:true});
+
+// Add a drag handler that works cleanly on both mouse and touch
+function addDrag(el,onStart,onMove,onEnd,opts={}){
+  const {stopProp=false,skipTargets=[]}=opts;
+  const startDrag=e=>{
+    if(e.type==='mousedown'&&_touchActive)return; // ignore ghost mouse after touch
+    if(skipTargets.length&&skipTargets.some(s=>e.target.closest(s)))return;
+    if(e.type==='mousedown')e.preventDefault();
+    if(e.type==='touchstart'){e.preventDefault();}
+    if(stopProp)e.stopPropagation();
+    const pos=gxy(e);
+    onStart(pos.x,pos.y,e);
+    const mv=ev=>{
+      ev.preventDefault();
+      const p=gxy(ev);
+      onMove(p.x,p.y,ev);
+    };
+    const up=ev=>{
+      const p=gxy(ev);
+      if(onEnd)onEnd(p.x,p.y,ev);
+      document.removeEventListener('mousemove',mv);
+      document.removeEventListener('mouseup',up);
+      document.removeEventListener('touchmove',mv);
+      document.removeEventListener('touchend',up);
+    };
+    document.addEventListener('mousemove',mv,{passive:false});
+    document.addEventListener('mouseup',up);
+    document.addEventListener('touchmove',mv,{passive:false});
+    document.addEventListener('touchend',up);
+  };
+  el.addEventListener('mousedown',startDrag);
+  el.addEventListener('touchstart',startDrag,{passive:false});
+}
+
 function gsize(){
   const ar=ARS[st.arIdx];
   const W0=cw.clientWidth,H0=cw.clientHeight;
@@ -944,27 +988,22 @@ function buildOl(W,H){
     cell.appendChild(acts);
 
     // DRAG to move the overlay
-    const onDragMove=e=>{
-      if(e.target.closest('.fo-resize'))return;
-      e.preventDefault();
-      const cr=canvas.getBoundingClientRect();
-      const sx=e.touches?e.touches[0].clientX:e.clientX;
-      const sy=e.touches?e.touches[0].clientY:e.clientY;
-      const sfox=fo.x,sfoy=fo.y;
-      const scx=canvas.width/cr.width,scy=canvas.height/cr.height;
-      const mv=ev=>{
-        const cx2=ev.touches?ev.touches[0].clientX:ev.clientX;
-        const cy2=ev.touches?ev.touches[0].clientY:ev.clientY;
-        fo.x=sfox+(cx2-sx)*scx/canvas.width;
-        fo.y=sfoy+(cy2-sy)*scy/canvas.height;
+    let _sfox,_sfoy,_scx,_scy;
+    addDrag(cell,
+      (sx,sy)=>{
+        const cr=canvas.getBoundingClientRect();
+        _sfox=fo.x;_sfoy=fo.y;
+        _scx=canvas.width/cr.width;_scy=canvas.height/cr.height;
+        // store start in closure
+        addDrag._foSx=sx;addDrag._foSy=sy;
+      },
+      (cx,cy)=>{
+        fo.x=_sfox+(cx-addDrag._foSx)*_scx/canvas.width;
+        fo.y=_sfoy+(cy-addDrag._foSy)*_scy/canvas.height;
         render();
-      };
-      const up=()=>{document.removeEventListener('mousemove',mv);document.removeEventListener('mouseup',up);document.removeEventListener('touchmove',mv);document.removeEventListener('touchend',up);};
-      document.addEventListener('mousemove',mv);document.addEventListener('mouseup',up);
-      document.addEventListener('touchmove',mv,{passive:false});document.addEventListener('touchend',up);
-    };
-    cell.addEventListener('mousedown',onDragMove);
-    cell.addEventListener('touchstart',onDragMove,{passive:false});
+      },
+      null,{skipTargets:['.fo-resize']}
+    );
 
     // RESIZE handles — all 4 corners
     // Each corner keeps its opposite corner fixed (that's the anchor)
@@ -1010,36 +1049,20 @@ function buildOl(W,H){
       const h2=document.createElement('div');
       h2.className='fo-resize';
       h2.style.cssText=`position:absolute;width:16px;height:16px;background:#ff5c5c;border-radius:50%;z-index:12;${style}`;
-      h2.addEventListener('mousedown',e=>{
-        e.preventDefault();e.stopPropagation();
-        const cr=canvas.getBoundingClientRect();
-        const sx=e.clientX,sy=e.clientY;
-        const sfo={...fo};
-        const scx=canvas.width/cr.width,scy=canvas.height/cr.height;
-        const mv=ev=>{
-          const ddx=(ev.clientX-sx)*scx/canvas.width;
-          const ddy=(ev.clientY-sy)*scy/canvas.height;
-          onDrag(ddx,ddy,sfo);
-          render();
-        };
-        const up=()=>{document.removeEventListener('mousemove',mv);document.removeEventListener('mouseup',up);};
-        document.addEventListener('mousemove',mv);document.addEventListener('mouseup',up);
-      });
-      // Touch support
-      h2.addEventListener('touchstart',e=>{
-        e.preventDefault();e.stopPropagation();
-        const cr=canvas.getBoundingClientRect();
-        const sx=e.touches[0].clientX,sy=e.touches[0].clientY;
-        const sfo={...fo};
-        const scx=canvas.width/cr.width,scy=canvas.height/cr.height;
-        const mv=ev=>{
-          const ddx=(ev.touches[0].clientX-sx)*scx/canvas.width;
-          const ddy=(ev.touches[0].clientY-sy)*scy/canvas.height;
-          onDrag(ddx,ddy,sfo);render();
-        };
-        const up=()=>{document.removeEventListener('touchmove',mv);document.removeEventListener('touchend',up);};
-        document.addEventListener('touchmove',mv,{passive:false});document.addEventListener('touchend',up);
-      },{passive:false});
+      let _sfo,_scx,_scy,_rsx,_rsy;
+      addDrag(h2,
+        (sx,sy)=>{
+          const cr=canvas.getBoundingClientRect();
+          _sfo={...fo};_scx=canvas.width/cr.width;_scy=canvas.height/cr.height;
+          _rsx=sx;_rsy=sy;
+        },
+        (cx,cy)=>{
+          const ddx=(cx-_rsx)*_scx/canvas.width;
+          const ddy=(cy-_rsy)*_scy/canvas.height;
+          onDrag(ddx,ddy,_sfo);render();
+        },
+        null,{stopProp:true}
+      );
       cell.appendChild(h2);
     });
 
@@ -1172,29 +1195,37 @@ function makeTearCell(i,polyStr,W,H,b){
 }
 
 function panDrag(cell,i,W,H,b){
-  let sx,sy,sox,soy;
-  const dn=e=>{
-    if(e.target.closest('.sab,.sacts'))return;
-    e.preventDefault();
-    sx=e.touches?e.touches[0].clientX:e.clientX;
-    sy=e.touches?e.touches[0].clientY:e.clientY;
-    const p=st.ps[i]||ds();sox=p.ox;soy=p.oy;
-    const sl=st.slots[i];
-    const sw=Math.round(sl.w*W)-b*2,sh=Math.round(sl.h*H)-b*2;
-    const mv=ev=>{
-      ev.preventDefault();
-      const cx=ev.touches?ev.touches[0].clientX:ev.clientX;
-      const cy=ev.touches?ev.touches[0].clientY:ev.clientY;
-      st.ps[i].ox=Math.max(-100,Math.min(100,sox+(cx-sx)/sw*100));
-      st.ps[i].oy=Math.max(-100,Math.min(100,soy+(cy-sy)/sh*100));
+  let sox,soy;
+  addDrag(cell,
+    (sx,sy)=>{
+      const p=st.ps[i]||ds();sox=p.ox;soy=p.oy;
+    },
+    (cx,cy,_,sx,sy)=>{
+      // sx/sy captured via closure below
+    },
+    null,
+    {skipTargets:['.sab','.sacts']}
+  );
+  // Use addDrag with closure for sx/sy
+  cell.removeEventListener('mousedown',cell._panFn);
+  cell.removeEventListener('touchstart',cell._panFn);
+  let _sx,_sy,_sox,_soy;
+  const sl=st.slots[i];
+  const sw=Math.round(sl.w*W)-b*2,sh=Math.round(sl.h*H)-b*2;
+  addDrag(cell,
+    (sx,sy)=>{
+      _sx=sx;_sy=sy;
+      const p=st.ps[i]||ds();_sox=p.ox;_soy=p.oy;
+    },
+    (cx,cy)=>{
+      st.ps[i].ox=Math.max(-100,Math.min(100,_sox+(cx-_sx)/sw*100));
+      st.ps[i].oy=Math.max(-100,Math.min(100,_soy+(cy-_sy)/sh*100));
       render();
       if(st.apan==='adj'&&st.asl===i)buildPan('adj');
-    };
-    const up=()=>{document.removeEventListener('mousemove',mv);document.removeEventListener('mouseup',up);document.removeEventListener('touchmove',mv);document.removeEventListener('touchend',up);};
-    document.addEventListener('mousemove',mv,{passive:false});document.addEventListener('mouseup',up);
-    document.addEventListener('touchmove',mv,{passive:false});document.addEventListener('touchend',up);
-  };
-  cell.addEventListener('mousedown',dn);cell.addEventListener('touchstart',dn,{passive:false});
+    },
+    null,
+    {skipTargets:['.sab','.sacts']}
+  );
 }
 
 function buildHandles(W,H){
@@ -1226,36 +1257,29 @@ function buildHandles(W,H){
 }
 
 function bdrag(el,type,ef,W,H,MN){
-  const dn=e=>{
-    e.preventDefault();e.stopPropagation();
-    let sx=e.touches?e.touches[0].clientX:e.clientX;
-    let sy=e.touches?e.touches[0].clientY:e.clientY;
-    const mv=ev=>{
-      ev.preventDefault();
-      const cx=ev.touches?ev.touches[0].clientX:ev.clientX;
-      const cy=ev.touches?ev.touches[0].clientY:ev.clientY;
+  let _sx,_sy;
+  addDrag(el,
+    (sx,sy)=>{_sx=sx;_sy=sy;},
+    (cx,cy)=>{
       if(type==='v'){
-        const dx=(cx-sx)/W;
+        const dx=(cx-_sx)/W;
         st.slots.forEach(sl=>{
           if(Math.abs(sl.x-ef)<.09&&sl.w-dx>MN){sl.x+=dx;sl.w-=dx;}
           else if(Math.abs(sl.x+sl.w-ef)<.09&&sl.w+dx>MN){sl.w+=dx;}
         });
-        ef+=dx;sx=cx;
+        ef+=dx;_sx=cx;
       } else {
-        const dy=(cy-sy)/H;
+        const dy=(cy-_sy)/H;
         st.slots.forEach(sl=>{
           if(Math.abs(sl.y-ef)<.09&&sl.h-dy>MN){sl.y+=dy;sl.h-=dy;}
           else if(Math.abs(sl.y+sl.h-ef)<.09&&sl.h+dy>MN){sl.h+=dy;}
         });
-        ef+=dy;sy=cy;
+        ef+=dy;_sy=cy;
       }
       render();
-    };
-    const up=()=>{document.removeEventListener('mousemove',mv);document.removeEventListener('mouseup',up);document.removeEventListener('touchmove',mv);document.removeEventListener('touchend',up);};
-    document.addEventListener('mousemove',mv,{passive:false});document.addEventListener('mouseup',up);
-    document.addEventListener('touchmove',mv,{passive:false});document.addEventListener('touchend',up);
-  };
-  el.addEventListener('mousedown',dn);el.addEventListener('touchstart',dn,{passive:false});
+    },
+    null,{stopProp:true}
+  );
 }
 
 function mthumb(tpl){
@@ -1692,40 +1716,32 @@ function syncWmDiv(){
   wmDiv.appendChild(rh);
 
   // drag move
-  const onDragStart=(e)=>{
-    if(e.target===rh)return;
-    e.preventDefault();
-    const sx=e.touches?e.touches[0].clientX:e.clientX;
-    const sy=e.touches?e.touches[0].clientY:e.clientY;
-    const swx=wm.x,swy=wm.y;
-    const cr=canvas.getBoundingClientRect();
-    const mv=ev=>{
-      const cx2=ev.touches?ev.touches[0].clientX:ev.clientX;
-      const cy2=ev.touches?ev.touches[0].clientY:ev.clientY;
-      const scx=canvas.width/cr.width,scy=canvas.height/cr.height;
-      wm.x=Math.max(0,Math.min(1,swx+(cx2-sx)*scx/canvas.width));
-      wm.y=Math.max(0,Math.min(1,swy+(cy2-sy)*scy/canvas.height));
+  let _wm_sx,_wm_sy,_wm_x,_wm_y,_wm_scx,_wm_scy;
+  addDrag(wmDiv,
+    (sx,sy)=>{
+      const cr=canvas.getBoundingClientRect();
+      _wm_sx=sx;_wm_sy=sy;_wm_x=wm.x;_wm_y=wm.y;
+      _wm_scx=canvas.width/cr.width;_wm_scy=canvas.height/cr.height;
+    },
+    (cx,cy)=>{
+      wm.x=Math.max(0,Math.min(1,_wm_x+(cx-_wm_sx)*_wm_scx/canvas.width));
+      wm.y=Math.max(0,Math.min(1,_wm_y+(cy-_wm_sy)*_wm_scy/canvas.height));
       renderWM();
-    };
-    const up=()=>{document.removeEventListener('mousemove',mv);document.removeEventListener('mouseup',up);document.removeEventListener('touchmove',mv);document.removeEventListener('touchend',up);};
-    document.addEventListener('mousemove',mv);document.addEventListener('mouseup',up);
-    document.addEventListener('touchmove',mv,{passive:false});document.addEventListener('touchend',up);
-  };
-  wmDiv.addEventListener('mousedown',onDragStart);
-  wmDiv.addEventListener('touchstart',onDragStart,{passive:false});
+    },
+    null,{skipTargets:['.wm-rh']}
+  );
 
   // drag resize
-  rh.addEventListener('mousedown',e=>{
-    e.preventDefault();e.stopPropagation();
-    const sx=e.clientX,ss=wm.scale;
-    const mv=ev=>{
+  let _rh_sx2,_rh_ss;
+  addDrag(rh,
+    (sx)=>{_rh_sx2=sx;_rh_ss=wm.scale;},
+    (cx)=>{
       const{W:W2}=gsize();
-      wm.scale=Math.max(0.05,Math.min(0.95,ss+(ev.clientX-sx)/W2));
+      wm.scale=Math.max(0.05,Math.min(0.95,_rh_ss+(cx-_rh_sx2)/W2));
       renderWM();
-    };
-    const up=()=>{document.removeEventListener('mousemove',mv);document.removeEventListener('mouseup',up);};
-    document.addEventListener('mousemove',mv);document.addEventListener('mouseup',up);
-  });
+    },
+    null,{stopProp:true}
+  );
 
   cw.appendChild(wmDiv);
 }
@@ -1889,40 +1905,38 @@ function txSyncEls(){
     // Resize handle
     const rh=document.createElement('div');
     rh.className='txb-rh';
-    rh.addEventListener('mousedown',e=>{
-      e.preventDefault();e.stopPropagation();
-      const sx=e.clientX,sy=e.clientY,sw=b.w,sh=b.h;
-      const scx=canvas.width/cr.width, scy=canvas.height/cr.height;
-      const mv=ev=>{
-        b.w=Math.max(0.05,sw+(ev.clientX-sx)*scx/canvas.width);
-        b.h=Math.max(0.03,sh+(ev.clientY-sy)*scy/canvas.height);
+    let _rh_sx,_rh_sy,_rh_sw,_rh_sh,_rh_scx,_rh_scy;
+    addDrag(rh,
+      (sx,sy)=>{
+        _rh_sx=sx;_rh_sy=sy;_rh_sw=b.w;_rh_sh=b.h;
+        const cr2=canvas.getBoundingClientRect();
+        _rh_scx=canvas.width/cr2.width;_rh_scy=canvas.height/cr2.height;
+      },
+      (cx,cy)=>{
+        b.w=Math.max(0.05,_rh_sw+(cx-_rh_sx)*_rh_scx/canvas.width);
+        b.h=Math.max(0.03,_rh_sh+(cy-_rh_sy)*_rh_scy/canvas.height);
         txSyncEls();
-      };
-      const up=()=>{document.removeEventListener('mousemove',mv);document.removeEventListener('mouseup',up);};
-      document.addEventListener('mousemove',mv);document.addEventListener('mouseup',up);
-    });
+      },
+      null,{stopProp:true}
+    );
     el.appendChild(rh);
 
     // Click to select
-    el.addEventListener('mousedown',e=>{
-      if(e.target===del||e.target===rh)return;
-      e.preventDefault();
-      txSel=i;
-      txSyncEls();
-      if(st.apan==='txt')txBuildPanel();
-      // Drag to move
-      const sx=e.clientX,sy=e.clientY,bx=b.x,by=b.y;
-      const scx=canvas.width/cr.width, scy=canvas.height/cr.height;
-      let moved=false;
-      const mv=ev=>{
-        moved=true;
-        b.x=bx+(ev.clientX-sx)*scx/canvas.width;
-        b.y=by+(ev.clientY-sy)*scy/canvas.height;
+    let _tx_sx,_tx_sy,_tx_bx,_tx_by,_tx_scx,_tx_scy;
+    addDrag(el,
+      (sx,sy)=>{
+        txSel=i;txSyncEls();if(st.apan==='txt')txBuildPanel();
+        _tx_sx=sx;_tx_sy=sy;_tx_bx=b.x;_tx_by=b.y;
+        const cr2=canvas.getBoundingClientRect();
+        _tx_scx=canvas.width/cr2.width;_tx_scy=canvas.height/cr2.height;
+      },
+      (cx,cy)=>{
+        b.x=_tx_bx+(cx-_tx_sx)*_tx_scx/canvas.width;
+        b.y=_tx_by+(cy-_tx_sy)*_tx_scy/canvas.height;
         txSyncEls();
-      };
-      const up=()=>{document.removeEventListener('mousemove',mv);document.removeEventListener('mouseup',up);};
-      document.addEventListener('mousemove',mv);document.addEventListener('mouseup',up);
-    });
+      },
+      null,{skipTargets:['.txb-del','.txb-rh']}
+    );
 
     // Double-click to open edit in panel
     el.addEventListener('dblclick',e=>{
