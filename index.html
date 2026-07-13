@@ -988,18 +988,17 @@ function buildOl(W,H){
     cell.appendChild(acts);
 
     // DRAG to move the overlay
-    let _sfox,_sfoy,_scx,_scy;
+    let _sfox,_sfoy,_scx,_scy,_foStartX,_foStartY;
     addDrag(cell,
       (sx,sy)=>{
         const cr=canvas.getBoundingClientRect();
         _sfox=fo.x;_sfoy=fo.y;
         _scx=canvas.width/cr.width;_scy=canvas.height/cr.height;
-        // store start in closure
-        addDrag._foSx=sx;addDrag._foSy=sy;
+        _foStartX=sx;_foStartY=sy;
       },
       (cx,cy)=>{
-        fo.x=_sfox+(cx-addDrag._foSx)*_scx/canvas.width;
-        fo.y=_sfoy+(cy-addDrag._foSy)*_scy/canvas.height;
+        fo.x=_sfox+(cx-_foStartX)*_scx/canvas.width;
+        fo.y=_sfoy+(cy-_foStartY)*_scy/canvas.height;
         render();
       },
       null,{skipTargets:['.fo-resize']}
@@ -1195,20 +1194,6 @@ function makeTearCell(i,polyStr,W,H,b){
 }
 
 function panDrag(cell,i,W,H,b){
-  let sox,soy;
-  addDrag(cell,
-    (sx,sy)=>{
-      const p=st.ps[i]||ds();sox=p.ox;soy=p.oy;
-    },
-    (cx,cy,_,sx,sy)=>{
-      // sx/sy captured via closure below
-    },
-    null,
-    {skipTargets:['.sab','.sacts']}
-  );
-  // Use addDrag with closure for sx/sy
-  cell.removeEventListener('mousedown',cell._panFn);
-  cell.removeEventListener('touchstart',cell._panFn);
   let _sx,_sy,_sox,_soy;
   const sl=st.slots[i];
   const sw=Math.round(sl.w*W)-b*2,sh=Math.round(sl.h*H)-b*2;
@@ -1218,6 +1203,7 @@ function panDrag(cell,i,W,H,b){
       const p=st.ps[i]||ds();_sox=p.ox;_soy=p.oy;
     },
     (cx,cy)=>{
+      if(!st.ps[i])st.ps[i]=ds();
       st.ps[i].ox=Math.max(-100,Math.min(100,_sox+(cx-_sx)/sw*100));
       st.ps[i].oy=Math.max(-100,Math.min(100,_soy+(cy-_sy)/sh*100));
       render();
