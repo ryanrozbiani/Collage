@@ -500,6 +500,7 @@ function openFilePicker(slotIdx){
   inp.click();
 }
 let st={tpl:TPLS[18],arIdx:0,bdr:6,col:'#1a1a1a',imgD:[],imgs:[],ps:[],asl:0,apan:'tpl',slots:null};
+let _previewW=0; // set by render() — used by paint() to scale border for export
 // Free overlay state: normalized position + size of the overlay photo
 let fo={x:0.5,y:0.5,w:0.45,h:0.45};
 
@@ -640,7 +641,8 @@ function pph(c,x,y,w,h,i){
 
 function paint(c,W,H){
   c.fillStyle=st.col;c.fillRect(0,0,W,H);
-  const b=st.bdr;
+  // Scale border proportionally: _previewW is set by render() before paint is called
+  const b=Math.round(st.bdr*(W/(_previewW||W)));
   const tpl=st.tpl;
 
   // ── Picture-in-Picture ───────────────────────────────────────────────────
@@ -869,6 +871,7 @@ function render(){
   const{W,H}=gsize();
   canvas.width=W;canvas.height=H;
   canvas.style.width=W+'px';canvas.style.height=H+'px';
+  _previewW=W; // store preview width so paint() can scale border correctly for export
   paint(ctx,W,H);
   const lo=Math.round((cw.clientWidth-W)/2);
   const to=Math.round((cw.clientHeight-H)/2);
@@ -2188,6 +2191,32 @@ doFullReset=function(){
   _txOrigReset();
 };
 
+// ── Mobile-aware saver: share sheet on phones, download on desktop ───────────
+function saveOrShareBlob(blob,sst){
+  const done=(msg)=>{sst.textContent=msg;st._savedOnce=true;setTimeout(()=>sst.textContent='',2500);};
+  const file=new File([blob],'collage.png',{type:'image/png'});
+  const isMobile=/iphone|ipad|ipod|android/i.test(navigator.userAgent||'');
+  // On iPhone/iPad the share sheet is the ONLY route to the Photos gallery.
+  if(isMobile&&navigator.canShare&&navigator.canShare({files:[file]})){
+    navigator.share({files:[file]})
+      .then(()=>done('Saved!'))
+      .catch(err=>{
+        if(err&&err.name==='AbortError'){sst.textContent='';return;} // user cancelled
+        // Share failed for another reason — fall back to download
+        downloadBlob(blob);done('Saved!');
+      });
+    return;
+  }
+  // Desktop (and any device without file share) → normal download
+  downloadBlob(blob);done('Saved!');
+}
+function downloadBlob(blob){
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a');a.download='collage.png';a.href=url;
+  document.body.appendChild(a);a.click();document.body.removeChild(a);
+  setTimeout(()=>URL.revokeObjectURL(url),1000);
+}
+
 // ── Hook into save to bake text onto export canvas ───────────────────────────
 setTimeout(()=>{
   const savBtn=document.getElementById('savbtn');
@@ -2208,10 +2237,19 @@ setTimeout(()=>{
       }
       // text boxes
       txPaintAll(oc,OUT,EH);
-      const url=off.toDataURL('image/png');
-      const a=document.createElement('a');a.download='collage.png';a.href=url;
-      document.body.appendChild(a);a.click();document.body.removeChild(a);
-      sst.textContent='Saved!';st._savedOnce=true;setTimeout(()=>sst.textContent='',2500);
+      // Save: on mobile (iPhone/iPad) open the share sheet so the user can
+      // tap "Save Image" straight to Photos; on desktop, download the file.
+      off.toBlob(blob=>{
+        if(!blob){
+          // Fallback to old dataURL download if toBlob unsupported
+          const url=off.toDataURL('image/png');
+          const a=document.createElement('a');a.download='collage.png';a.href=url;
+          document.body.appendChild(a);a.click();document.body.removeChild(a);
+          sst.textContent='Saved!';st._savedOnce=true;setTimeout(()=>sst.textContent='',2500);
+          return;
+        }
+        saveOrShareBlob(blob,sst);
+      },'image/png');
     };
     const total=st.imgD.filter(Boolean).length;
     if(!total){doExport();return;}
